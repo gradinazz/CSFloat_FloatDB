@@ -1,0 +1,6 @@
+{
+  "account_name": "MyAccountName",
+  "steam_login": "my_steam_login",
+  "steam_password": "my_steam_password",
+  "shared_secret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}

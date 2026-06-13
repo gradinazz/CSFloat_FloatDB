@@ -1,0 +1,6 @@
+node_modules/
+solver/
+account.json
+results.json
+count-log*.txt
+schema.txt
