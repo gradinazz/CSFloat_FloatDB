@@ -156,6 +156,103 @@ class FloatDBClient {
     }
 
     /**
+     * Полная выкачка курсорной (keyset) пагинацией по float_value.
+     *
+     * Зачем: offset-пагинация FloatDB достаёт только первые ~10k результатов окна,
+     * потом зацикливается на них (дубли) и упирается в 400 на глубоком offset.
+     * Решение: внутри окна [min,max] идём offset'ом, пока приходят новые уникальные;
+     * как только застряли (страница без новых) или окно кончилось — двигаем min к
+     * максимальному float среди уже собранного (globalMaxFloat). Окно ползёт вверх,
+     * пока не дойдёт до max.
+     *
+     * Дедуп по float_id (min включающий — граничные предметы перечитываются, но дубли
+     * отсеиваются, без риска пропуска). Каждый запрос через search() — токен/ретраи/
+     * троттлинг-паузы переиспользуются.
+     *
+     * @param {Object} params - Те же что и search() (важны min/max — границы по float)
+     * @param {Object} [options]
+     * @param {number} [options.delayMs=1500] - Базовая задержка между запросами (мс)
+     * @param {Array}  [options.seedItems=[]] - Уже собранные предметы (для resume)
+     * @param {Function} [options.onProgress] - async ({results, unique, totalCount, completed, error})
+     * @returns {Promise<{results: Array, count: number, completed: boolean, nextMin: number, error?: Error}>}
+     */
+    async searchAllByFloat(params = {}, { delayMs = 1500, seedItems = [], onProgress = null } = {}) {
+        await this._ensureSession();
+        const limit = parseInt(params.limit ?? '100', 10);
+        const maxFloat = params.max != null ? parseFloat(params.max) : 1;
+        const baseMin = params.min != null ? parseFloat(params.min) : 0;
+
+        const seen = new Set();
+        const results = [];
+        let globalMaxFloat = baseMin;
+
+        // Seed из предыдущего прогона (resume): восстанавливаем seen + фронтир.
+        for (const it of seedItems) {
+            if (it && it.float_id !== undefined && !seen.has(it.float_id)) {
+                seen.add(it.float_id);
+                results.push(it);
+                if (it.float_value > globalMaxFloat) globalMaxFloat = it.float_value;
+            }
+        }
+
+        let totalCount = 0;
+        let min = globalMaxFloat;
+        let offset = 0;
+        let completed = false;
+        let page = 0;
+
+        try {
+            for (;;) {
+                if (page > 0) await delay(this._jitter(delayMs));
+                page++;
+
+                const pageParams = { ...params, min: String(min), max: String(maxFloat) };
+                delete pageParams.start;
+                if (offset > 0) pageParams.start = String(offset);
+
+                const data = await this.search(pageParams); // токен/ретраи/троттлинг внутри
+                if (totalCount === 0) totalCount = data.count;
+                const batch = data.results || [];
+
+                let newUnique = 0;
+                for (const it of batch) {
+                    if (it.float_id !== undefined && !seen.has(it.float_id)) {
+                        seen.add(it.float_id);
+                        results.push(it);
+                        newUnique++;
+                        if (it.float_value > globalMaxFloat) globalMaxFloat = it.float_value;
+                    }
+                }
+
+                console.log(`[FloatDB] Cursor page ${page}: min=${min.toFixed(6)} offset=${offset} +${newUnique} new (${results.length} unique / ${totalCount})`);
+                if (onProgress) await onProgress({ results, unique: results.length, totalCount, completed: false });
+
+                const endOfWindow = batch.length < limit; // последняя (неполная) страница окна
+
+                if (endOfWindow || newUnique === 0) {
+                    // Окно кончилось ИЛИ offset застрял — двигаем фронтир вверх по float.
+                    if (globalMaxFloat > min) {
+                        min = globalMaxFloat;
+                        offset = 0;
+                    } else {
+                        completed = true; // выше уже нечего брать
+                        break;
+                    }
+                } else {
+                    offset += limit; // внутри окна продолжаем обычным offset
+                }
+            }
+        } catch (err) {
+            console.error(`[FloatDB] Cursor crawl stopped (min=${min}): ${err.message}`);
+            if (onProgress) await onProgress({ results, unique: results.length, totalCount, completed: false, error: err.message });
+            return { results, count: totalCount, completed: false, nextMin: min, error: err };
+        }
+
+        if (onProgress) await onProgress({ results, unique: results.length, totalCount, completed });
+        return { results, count: totalCount, completed, nextMin: min };
+    }
+
+    /**
      * Выполняет поиск и возвращает только count + context.
      * Использует limit=1 для минимальной нагрузки.
      *

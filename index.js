@@ -20,10 +20,11 @@
  *   node index.js --file urls.txt --parse --delay 2000 -o report.json
  *
  * Многостраничная выкачка (с чекпоинтами и докачкой):
- *   node index.js --url "..." --all -o out.json       — выкачать всё (по 100/страница)
- *   node index.js --url "..." --pages 20              — первые 20 страниц
- *   node index.js --url "..." --resume -o out.json    — докачать прерванный out.json
- *   node index.js --url "..." --start 4100 -o out.json — начать с offset 4100
+ *   node index.js --url "..." --all -o out.json       — выкачать ВСЕ уникальные
+ *                                                        (курсорная пагинация по float, дедуп по float_id)
+ *   node index.js --url "..." --pages 20              — первые 20 страниц (offset-режим, для тестов)
+ *   node index.js --url "..." --all --resume -o out.json — докачать прерванный out.json
+ *   node index.js --url "..." --start 4100 -o out.json   — offset-режим с offset 4100
  */
 
 const fs = require('fs');
@@ -279,19 +280,56 @@ async function main() {
 
     try {
         if (wantsCrawl) {
-            const maxPages = meta.all ? Infinity : (meta.maxPages || Infinity);
             const outputFile = meta.outputFile || generateTimestampedFilename();
             const outputPath = path.join(__dirname, outputFile);
 
             // Resume: подхватываем уже сохранённые результаты из выходного файла.
             let seedResults = [];
-            let startOffset = meta.startOffset || 0;
             if (meta.resume && fs.existsSync(outputPath)) {
                 const prev = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
                 seedResults = prev.results || [];
-                if (!meta.startOffset) startOffset = seedResults.length;
-                console.log(`[Main] Resume: загружено ${seedResults.length} предметов, продолжаем с offset ${startOffset}`);
+                console.log(`[Main] Resume: загружено ${seedResults.length} предметов`);
             }
+
+            // --all → курсорная выкачка по float (берёт все уникальные).
+            // --pages N → старый offset-режим (для частичных/тестовых прогонов).
+            if (meta.all) {
+                const save = (results, count, completed) => {
+                    enrichOrigins(results); // results уже включают seed (переданы как seedItems)
+                    fs.writeFileSync(outputPath, JSON.stringify({
+                        count, completed, fetched: results.length, results
+                    }, null, 2));
+                };
+
+                let sincePage = 0;
+                const result = await client.searchAllByFloat(searchParams, {
+                    delayMs,
+                    seedItems: seedResults,
+                    onProgress: async ({ results, totalCount, completed }) => {
+                        sincePage++;
+                        if (completed || sincePage % CHECKPOINT_EVERY === 0) {
+                            save(results, totalCount, completed);
+                            console.log(`[Main] Checkpoint: ${results.length} уникальных -> ${outputFile}`);
+                        }
+                    }
+                });
+
+                save(result.results, result.count, result.completed);
+
+                if (result.completed) {
+                    console.log(`\n[Main] Готово. Уникальных предметов: ${result.results.length} (count в БД: ${result.count}). Сохранено в ${outputFile}`);
+                } else {
+                    console.log(`\n[Main] Выкачка прервана (min=${result.nextMin}). Собрано ${result.results.length} уникальных.`);
+                    console.log(`[Main] Сохранено в ${outputFile}. Докачать: node index.js <те же фильтры> --all --resume -o ${outputFile}`);
+                    process.exitCode = 1;
+                }
+                return;
+            }
+
+            // offset-режим (--pages / --start)
+            const maxPages = meta.maxPages || Infinity;
+            let startOffset = meta.startOffset || (seedResults.length ? seedResults.length : 0);
+            if (seedResults.length) console.log(`[Main] Resume offset: ${startOffset}`);
 
             const save = (results, count, completed) => {
                 const merged = seedResults.concat(results);
