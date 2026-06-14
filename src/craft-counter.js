@@ -14,6 +14,8 @@
  * Если count >= 40000, разбиваем на float sub-ranges и суммируем.
  */
 
+const { delay } = require('./utils');
+
 const COUNT_LIMIT = 40000;
 
 const DEFAULT_SUB_RANGES = [
@@ -53,7 +55,7 @@ class CraftCounter {
         // Запросы от 5 до 1 копии стикера
         for (let level = 5; level >= 1; level--) {
             if (level < 5) {
-                await this._delay(this.delayMs);
+                await delay(this.delayMs);
             }
 
             const stickers = JSON.stringify(
@@ -112,7 +114,7 @@ class CraftCounter {
         let ctx = context;
 
         for (const [min, max] of ranges) {
-            await this._delay(this.delayMs);
+            await delay(this.delayMs);
 
             const rangeParams = { ...params, min: String(min), max: String(max) };
             const result = await this.client.searchCount(rangeParams, ctx);
@@ -124,7 +126,7 @@ class CraftCounter {
                 console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] still >= ${COUNT_LIMIT}, bisecting at ${mid}`);
                 const left = await this._getCountSplit(params, ctx, label, level, [[min, mid]]);
                 ctx = left.context;
-                await this._delay(this.delayMs);
+                await delay(this.delayMs);
                 const right = await this._getCountSplit(params, ctx, label, level, [[mid, max]]);
                 ctx = right.context;
                 total += left.total + right.total;
@@ -135,10 +137,6 @@ class CraftCounter {
         }
 
         return { total, context: ctx };
-    }
-
-    _delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
 

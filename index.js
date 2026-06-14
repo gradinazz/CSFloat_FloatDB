@@ -30,6 +30,12 @@ const { parseCSFloatUrl, readInputFile } = require('./src/file-reader');
 const BatchProcessor = require('./src/batch-processor');
 const { fetchSchema, resolveStickers } = require('./src/schema-resolver');
 
+function generateTimestampedFilename() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `results_${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}.json`;
+}
+
 const ORIGIN_NAMES = {
     0: 'Timed Drop', 1: 'Achievement', 2: 'Purchased', 3: 'Traded',
     4: 'Crafted', 5: 'Store Promotion', 6: 'Gifted', 7: 'Support Granted',
@@ -51,66 +57,78 @@ function parseArgs() {
     // overrides: CLI overrides that will be merged on top of urlParams
     const overrides = {};
 
-    for (let i = 0; i < args.length; i++) {
+    let i = 0;
+    // Считывает значение следующего аргумента; падает, если оно отсутствует.
+    const nextVal = () => {
+        const v = args[i + 1];
+        if (v === undefined) {
+            console.error(`[Main] Missing value for ${args[i]}`);
+            process.exit(1);
+        }
+        i++;
+        return v;
+    };
+
+    for (i = 0; i < args.length; i++) {
         switch (args[i]) {
             case '--url':
-                Object.assign(urlParams, parseCSFloatUrl(args[++i]));
+                Object.assign(urlParams, parseCSFloatUrl(nextVal()));
                 break;
             case '--stickers':
-                overrides.stickers = JSON.stringify(args[++i].split(',').map(id => ({ i: id.trim() })));
+                overrides.stickers = JSON.stringify(nextVal().split(',').map(id => ({ i: id.trim() })));
                 break;
             case '--keychains':
-                overrides.keychains = JSON.stringify(args[++i].split(',').map(id => ({ i: id.trim() })));
+                overrides.keychains = JSON.stringify(nextVal().split(',').map(id => ({ i: id.trim() })));
                 break;
             case '--collection':
-                overrides.collection = args[++i];
+                overrides.collection = nextVal();
                 break;
             case '--min':
-                overrides.min = args[++i];
+                overrides.min = nextVal();
                 break;
             case '--max':
-                overrides.max = args[++i];
+                overrides.max = nextVal();
                 break;
             case '--def':
-                overrides.def_index = args[++i];
+                overrides.def_index = nextVal();
                 break;
             case '--paint':
-                overrides.paint_index = args[++i];
+                overrides.paint_index = nextVal();
                 break;
             case '--limit':
-                overrides.limit = args[++i];
+                overrides.limit = nextVal();
                 break;
             case '--category':
-                overrides.category = args[++i];
+                overrides.category = nextVal();
                 break;
             case '--rarity':
-                overrides.rarity = args[++i];
+                overrides.rarity = nextVal();
                 break;
             case '--order':
-                overrides.order = args[++i];
+                overrides.order = nextVal();
                 break;
             case '--pages':
-                meta.maxPages = parseInt(args[++i], 10);
+                meta.maxPages = parseInt(nextVal(), 10);
                 break;
             case '--all':
                 meta.all = true;
                 break;
             case '--output':
             case '-o':
-                meta.outputFile = args[++i];
+                meta.outputFile = nextVal();
                 break;
             // Новые флаги
             case '--parse':
                 meta.parseMode = true;
                 break;
             case '--file':
-                meta.inputFile = args[++i];
+                meta.inputFile = nextVal();
                 break;
             case '--count':
                 meta.countMode = true;
                 break;
             case '--delay':
-                meta.delayMs = parseInt(args[++i], 10);
+                meta.delayMs = parseInt(nextVal(), 10);
                 break;
         }
     }
@@ -170,6 +188,7 @@ async function main() {
 
         const category = searchParams.category || null;
         const processor = new BatchProcessor({ client, delayMs, category });
+        // Маппинг режимов: --parse → только count (countOnly); --count → craft-уровни 5x..1x (craftLevels).
         const output = await processor.process(tasks, {
             countOnly: meta.parseMode || false,
             craftLevels: meta.countMode || false
@@ -189,7 +208,7 @@ async function main() {
             }
         }
 
-        const outputFile = meta.outputFile || 'results.json';
+        const outputFile = meta.outputFile || generateTimestampedFilename();
         fs.writeFileSync(path.join(__dirname, outputFile), JSON.stringify(output, null, 2));
         console.log(`\n[Main] Results saved to ${outputFile}`);
         return;
@@ -197,10 +216,7 @@ async function main() {
 
     // --- Single parse mode: --parse без --file ---
     if (meta.parseMode) {
-        // Defaults: min/max if not provided
-        if (!searchParams.min) searchParams.min = '0';
-        if (!searchParams.max) searchParams.max = '1';
-
+        // Дефолты min/max/limit проставляет FloatDBClient.
         const hasFilter = searchParams.stickers || searchParams.keychains ||
             searchParams.collection || searchParams.def_index || searchParams.paint_index ||
             searchParams.category || searchParams.rarity || searchParams.name;
@@ -223,11 +239,7 @@ async function main() {
     }
 
     // --- Default search mode ---
-    // Defaults: min/max/limit if not provided
-    if (!searchParams.min) searchParams.min = '0';
-    if (!searchParams.max) searchParams.max = '1';
-    if (!searchParams.limit) searchParams.limit = '100';
-
+    // Дефолты min/max/limit проставляет FloatDBClient.
     // Default demo if no meaningful filter params
     const hasFilter = searchParams.stickers || searchParams.keychains ||
         searchParams.collection || searchParams.def_index || searchParams.paint_index ||
@@ -275,7 +287,7 @@ async function main() {
             }
         }
 
-        const outputFile = meta.outputFile || 'results.json';
+        const outputFile = meta.outputFile || generateTimestampedFilename();
         fs.writeFileSync(path.join(__dirname, outputFile), JSON.stringify({ count: results.length, results }, null, 2));
         console.log(`\n[Main] Results saved to ${outputFile}`);
 

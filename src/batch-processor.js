@@ -13,6 +13,7 @@
 
 const { parseCSFloatUrl } = require('./file-reader');
 const CraftCounter = require('./craft-counter');
+const { delay } = require('./utils');
 
 class BatchProcessor {
     /**
@@ -47,7 +48,7 @@ class BatchProcessor {
 
             if (i > 0) {
                 console.log(`[Batch] Waiting ${this.delayMs / 1000}s before next task...`);
-                await this._delay(this.delayMs);
+                await delay(this.delayMs);
             }
 
             console.log(`[Batch] [${i + 1}/${tasks.length}] ${task.name}`);
@@ -89,10 +90,6 @@ class BatchProcessor {
         }
 
         return output;
-    }
-
-    _delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
 

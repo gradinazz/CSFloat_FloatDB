@@ -13,7 +13,13 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+const { BROWSER_UA, delay } = require('./utils');
+
 const FLOATDB_SEARCH_URL = 'https://csfloat.com/api/v1/floatdb/search';
+const REQUEST_TIMEOUT_MS = 30000;
+
+// Сколько раз пробуем восстановиться после 401/403 (re-solve → refresh session).
+const MAX_AUTH_RETRIES = 2;
 
 class FloatDBClient {
     /**
@@ -36,10 +42,7 @@ class FloatDBClient {
      * @returns {Promise<{count: number, results: Array, context: Object}>}
      */
     async search(params = {}, context = null) {
-        // Ensure session
-        if (!this.sessionJWT) {
-            this.sessionJWT = await this.session.getSession();
-        }
+        await this._ensureSession();
 
         // Решаем Turnstile только если нет готового контекста
         let token, fid;
@@ -52,83 +55,14 @@ class FloatDBClient {
             fid = this._generateFid();
         }
 
-        // Build query params — прокидываем всё из params как есть
-        const queryParams = new URLSearchParams();
-
-        for (const [key, value] of Object.entries(params)) {
-            if (value !== undefined && value !== null && value !== '') {
-                queryParams.set(key, String(value));
-            }
-        }
-
-        // Гарантируем наличие min/max/limit
-        if (!queryParams.has('min')) queryParams.set('min', '0');
-        if (!queryParams.has('max')) queryParams.set('max', '1');
-        if (!queryParams.has('limit')) queryParams.set('limit', '100');
-
-        // Добавляем служебные параметры
-        queryParams.set('token', token);
-        queryParams.set('fid', fid);
-
-        const url = `${FLOATDB_SEARCH_URL}?${queryParams.toString()}`;
-
-        console.log(`[FloatDB] Searching: ${queryParams.toString().replace(/&token=[^&]+/, '&token=***').replace(/&fid=[^&]+/, '')}`);
-
-        let resp;
-        try {
-            resp = await axios.get(url, {
-                headers: {
-                    Cookie: `session=${this.sessionJWT}`,
-                    Accept: 'application/json, text/plain, */*',
-                    Referer: 'https://csfloat.com/db',
-                    Origin: 'https://csfloat.com',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
-                },
-                timeout: 30000
-            });
-        } catch (err) {
-            // При 401/403 — token или session могли протухнуть
-            if (err.response && (err.response.status === 401 || err.response.status === 403)) {
-                if (context) {
-                    // Был context — решаем новый Turnstile
-                    console.log(`[FloatDB] Got ${err.response.status}, solving new Turnstile...`);
-                    return this.search(params, null);
-                }
-                // Не было context — возможно session JWT истёк, обновляем
-                if (!this._retrying401) {
-                    this._retrying401 = true;
-                    console.log(`[FloatDB] Got ${err.response.status} without context, refreshing session...`);
-                    try {
-                        await this.refreshSession();
-                        return await this.search(params, null);
-                    } finally {
-                        this._retrying401 = false;
-                    }
-                }
-                // Если уже ретраили — пробрасываем ошибку
-            }
-            // При 429 — rate limit, ждём и повторяем (backoff 5-10 мин)
-            if (err.response && err.response.status === 429) {
-                const waitMs = 5 * 60 * 1000 + Math.floor(Math.random() * 5 * 60 * 1000); // 5-10 мин
-                console.log(`[FloatDB] Got 429 (rate limit), waiting ${(waitMs / 60000).toFixed(1)} min...`);
-                await this._delay(waitMs);
-                return this.search(params, null); // новый token после ожидания
-            }
-            throw err;
-        }
-
-        if (resp.status !== 200) {
-            throw new Error(`FloatDB search returned ${resp.status}: ${JSON.stringify(resp.data)}`);
-        }
-
-        console.log(`[FloatDB] Found ${resp.data.count} results (returned ${resp.data.results?.length ?? 0})`);
-        return { ...resp.data, context: { token, fid } };
+        const { data, token: usedToken, fid: usedFid } = await this._request(params, token, fid);
+        return { ...data, context: { token: usedToken, fid: usedFid } };
     }
 
     /**
      * Поиск по нескольким страницам.
      * Пагинация через параметр start (offset).
-     * Turnstile решается один раз, token/fid переиспользуются.
+     * Pipeline: следующий Turnstile token решается параллельно с текущим запросом.
      *
      * @param {Object} params - Те же что и search()
      * @param {number} [maxPages=3] - Макс. количество страниц
@@ -138,13 +72,18 @@ class FloatDBClient {
     async searchAll(params = {}, maxPages = 3, delayMs = 1000) {
         const allResults = [];
         let totalCount = 0;
-        let context = null;
         const limit = parseInt(params.limit ?? '100', 10);
+
+        await this._ensureSession();
+
+        // Pre-solve first token
+        console.log('[FloatDB] Solving initial Turnstile...');
+        let nextToken = await this.solver.solve();
+        const fid = this._generateFid();
 
         for (let page = 0; page < maxPages; page++) {
             if (page > 0) {
-                console.log(`[FloatDB] Waiting ${delayMs / 1000}s before next page...`);
-                await this._delay(delayMs);
+                await delay(delayMs);
             }
 
             const pageParams = { ...params };
@@ -152,8 +91,22 @@ class FloatDBClient {
                 pageParams.start = String(page * limit);
             }
 
-            const data = await this.search(pageParams, context);
-            context = data.context; // переиспользуем token/fid
+            // Use the pre-solved token for this request
+            const currentToken = nextToken;
+
+            // Start solving next token IN PARALLEL with the API request (pipeline)
+            const needsMore = (page + 1) < maxPages;
+            let nextTokenPromise = null;
+            if (needsMore) {
+                nextTokenPromise = this.solver.solve().catch(err => {
+                    console.log(`[FloatDB] Pre-solve failed: ${err.message}, will solve on demand`);
+                    return null;
+                });
+            }
+
+            // Make API request with current token
+            const { data } = await this._request(pageParams, currentToken, fid);
+
             if (page === 0) totalCount = data.count;
 
             if (!data.results || data.results.length === 0) break;
@@ -163,13 +116,18 @@ class FloatDBClient {
 
             // Если вернулось меньше limit — больше нет результатов
             if (data.results.length < limit) break;
+
+            // Get the pre-solved next token (or solve fresh if it failed)
+            if (needsMore) {
+                nextToken = await nextTokenPromise;
+                if (!nextToken) {
+                    console.log('[FloatDB] Solving Turnstile (on demand)...');
+                    nextToken = await this.solver.solve();
+                }
+            }
         }
 
         return allResults;
-    }
-
-    _delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**
@@ -193,11 +151,105 @@ class FloatDBClient {
         this.sessionJWT = await this.session.getSession();
     }
 
+    // --- Внутренние помощники ---
+
+    async _ensureSession() {
+        if (!this.sessionJWT) {
+            this.sessionJWT = await this.session.getSession();
+        }
+    }
+
     /**
-     * Генерирует случайный fingerprint ID (аналог fid из запроса)
+     * Единая точка HTTP-запроса к FloatDB с обработкой 401/403/429.
+     *
+     * Восстановление:
+     *  - 401/403, попытка 1: решаем новый Turnstile (token протух);
+     *  - 401/403, попытка 2: обновляем session JWT и решаем новый Turnstile;
+     *  - 429: ждём 5-10 мин и повторяем со свежим token (без расхода попыток auth).
+     *
+     * @returns {Promise<{data: Object, token: string, fid: string}>}
+     *   token/fid — фактически использованные при успешном запросе (для переиспользования).
+     */
+    async _request(params, token, fid, attempt = 0) {
+        const queryParams = this._buildQuery(params, token, fid);
+        const url = `${FLOATDB_SEARCH_URL}?${queryParams.toString()}`;
+        console.log(`[FloatDB] Searching: ${this._maskQuery(queryParams)}`);
+
+        try {
+            const resp = await axios.get(url, {
+                headers: this._headers(),
+                timeout: REQUEST_TIMEOUT_MS
+            });
+            console.log(`[FloatDB] Found ${resp.data.count} results (returned ${resp.data.results?.length ?? 0})`);
+            return { data: resp.data, token, fid };
+        } catch (err) {
+            const status = err.response?.status;
+
+            if ((status === 401 || status === 403) && attempt < MAX_AUTH_RETRIES) {
+                if (attempt === 0) {
+                    console.log(`[FloatDB] Got ${status}, solving new Turnstile...`);
+                } else {
+                    console.log(`[FloatDB] Got ${status} again, refreshing session...`);
+                    await this.refreshSession();
+                }
+                const freshToken = await this.solver.solve();
+                return this._request(params, freshToken, this._generateFid(), attempt + 1);
+            }
+
+            if (status === 429) {
+                const waitMs = 5 * 60 * 1000 + Math.floor(Math.random() * 5 * 60 * 1000); // 5-10 мин
+                console.log(`[FloatDB] Got 429 (rate limit), waiting ${(waitMs / 60000).toFixed(1)} min...`);
+                await delay(waitMs);
+                const freshToken = await this.solver.solve();
+                return this._request(params, freshToken, this._generateFid(), attempt); // 429 не тратит попытки auth
+            }
+
+            throw err;
+        }
+    }
+
+    /**
+     * Строит query-параметры: прокидывает params как есть, гарантирует min/max/limit,
+     * добавляет служебные token/fid.
+     */
+    _buildQuery(params, token, fid) {
+        const queryParams = new URLSearchParams();
+        for (const [key, value] of Object.entries(params)) {
+            if (value !== undefined && value !== null && value !== '') {
+                queryParams.set(key, String(value));
+            }
+        }
+        if (!queryParams.has('min')) queryParams.set('min', '0');
+        if (!queryParams.has('max')) queryParams.set('max', '1');
+        if (!queryParams.has('limit')) queryParams.set('limit', '100');
+        queryParams.set('token', token);
+        queryParams.set('fid', fid);
+        return queryParams;
+    }
+
+    /** Маскирует token и убирает fid в логах. */
+    _maskQuery(queryParams) {
+        return queryParams.toString()
+            .replace(/&token=[^&]+/, '&token=***')
+            .replace(/&fid=[^&]+/, '');
+    }
+
+    _headers() {
+        return {
+            Cookie: `session=${this.sessionJWT}`,
+            Accept: 'application/json, text/plain, */*',
+            Referer: 'https://csfloat.com/db',
+            Origin: 'https://csfloat.com',
+            'User-Agent': BROWSER_UA
+        };
+    }
+
+    /**
+     * Генерирует случайный fingerprint ID (аналог fid из запроса).
+     * 15 байт base64url = ровно 20 символов.
      */
     _generateFid() {
-        return crypto.randomBytes(10).toString('base64url').slice(0, 20).toLowerCase();
+        return crypto.randomBytes(15).toString('base64url').slice(0, 20);
     }
 }
 

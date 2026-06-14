@@ -1,6 +1,7 @@
 node_modules/
 solver/
 account.json
-results.json
+results*.json
+.idea/
 count-log*.txt
 schema.txt

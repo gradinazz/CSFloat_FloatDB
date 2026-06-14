@@ -7,28 +7,21 @@
  * API: GET https://csfloat.com/api/v1/schema
  */
 
-const https = require('https');
+const axios = require('axios');
+
+const SCHEMA_URL = 'https://csfloat.com/api/v1/schema';
 
 /**
  * Загружает schema с CSFloat API.
  * @returns {Promise<Object>} schema object
  */
-function fetchSchema() {
-    return new Promise((resolve, reject) => {
-        https.get('https://csfloat.com/api/v1/schema', (res) => {
-            let data = '';
-            res.on('data', chunk => { data += chunk; });
-            res.on('end', () => {
-                try {
-                    resolve(JSON.parse(data));
-                } catch (err) {
-                    reject(new Error(`Failed to parse schema JSON: ${err.message}`));
-                }
-            });
-        }).on('error', err => {
-            reject(new Error(`Failed to fetch schema: ${err.message}`));
-        });
-    });
+async function fetchSchema() {
+    try {
+        const resp = await axios.get(SCHEMA_URL, { timeout: 30000 });
+        return resp.data;
+    } catch (err) {
+        throw new Error(`Failed to fetch schema: ${err.message}`);
+    }
 }
 
 /**

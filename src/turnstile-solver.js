@@ -10,6 +10,8 @@
 
 const axios = require('axios');
 
+const { delay } = require('./utils');
+
 const CSFLOAT_SITE_KEY = '0x4AAAAAAUb7JKShv3EPttt';
 const CSFLOAT_WEBSITE_URL = 'https://csfloat.com/db';
 
@@ -48,7 +50,7 @@ class TurnstileSolver {
                 if (attempt < maxRetries && err.message && err.message.includes('token not found')) {
                     const waitSec = attempt * 10;
                     console.log(`[Turnstile] Token not found (attempt ${attempt}/${maxRetries}), retrying in ${waitSec}s...`);
-                    await this._delay(waitSec * 1000);
+                    await delay(waitSec * 1000);
                     continue;
                 }
                 throw err;
@@ -74,7 +76,7 @@ class TurnstileSolver {
 
     async _pollResult(taskId) {
         for (let i = 0; i < this.maxPollAttempts; i++) {
-            await this._delay(this.pollIntervalMs);
+            await delay(this.pollIntervalMs);
 
             const resp = await this.client.post('/getTaskResult', {
                 clientKey: this.apiKey,
@@ -95,10 +97,6 @@ class TurnstileSolver {
         }
 
         throw new Error(`Turnstile solve timeout after ${this.maxPollAttempts} attempts`);
-    }
-
-    _delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
     }
 }
 

@@ -17,6 +17,8 @@ const SteamCommunity = require('steamcommunity');
 const SteamTotp = require('steam-totp');
 const axios = require('axios');
 
+const { BROWSER_UA } = require('./utils');
+
 const STEAM_OPENID_URL = 'https://steamcommunity.com/openid/login';
 const CSFLOAT_RETURN_TO = 'https://csgofloat.com';
 const CSFLOAT_REALM = 'https://csgofloat.com';
@@ -88,7 +90,7 @@ class CSFloatSession {
             validateStatus: (status) => status < 500,
             timeout: 30000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
+                'User-Agent': BROWSER_UA
             }
         });
 
