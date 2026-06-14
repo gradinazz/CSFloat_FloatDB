@@ -18,6 +18,12 @@
  *   node index.js --file stickers.txt --parse         — информация о скинах для каждого стикера
  *   node index.js --file urls.txt --parse             — batch-информация по списку URL
  *   node index.js --file urls.txt --parse --delay 2000 -o report.json
+ *
+ * Многостраничная выкачка (с чекпоинтами и докачкой):
+ *   node index.js --url "..." --all -o out.json       — выкачать всё (по 100/страница)
+ *   node index.js --url "..." --pages 20              — первые 20 страниц
+ *   node index.js --url "..." --resume -o out.json    — докачать прерванный out.json
+ *   node index.js --url "..." --start 4100 -o out.json — начать с offset 4100
  */
 
 const fs = require('fs');
@@ -46,6 +52,16 @@ const ORIGIN_NAMES = {
     19: 'Periodic Score Reward', 20: 'Recycling', 21: 'Tournament Drop',
     22: 'Stock Item', 23: 'Quest Reward', 24: 'Level Up Reward'
 };
+
+// Проставляет человекочитаемый origin из props (idempotent — для resume/чекпоинтов).
+function enrichOrigins(results) {
+    for (const item of results) {
+        if (item.props !== undefined && item.origin === undefined) {
+            const originId = item.props & 0xFF;
+            item.origin = ORIGIN_NAMES[originId] || `Unknown (${originId})`;
+        }
+    }
+}
 
 // --- Parse CLI args ---
 function parseArgs() {
@@ -129,6 +145,12 @@ function parseArgs() {
                 break;
             case '--delay':
                 meta.delayMs = parseInt(nextVal(), 10);
+                break;
+            case '--start':
+                meta.startOffset = parseInt(nextVal(), 10);
+                break;
+            case '--resume':
+                meta.resume = true;
                 break;
         }
     }
@@ -251,17 +273,66 @@ async function main() {
 
     console.log('[Main] Search params:', JSON.stringify(searchParams, null, 2));
 
+    // Многостраничная выкачка нужна при --all / --pages>1 / --start / --resume.
+    const wantsCrawl = meta.all || (meta.maxPages && meta.maxPages > 1) || meta.startOffset || meta.resume;
+    const CHECKPOINT_EVERY = 10; // сохранять частичный результат каждые N страниц
+
     try {
-        let results;
-        const maxPages = meta.all ? Infinity : meta.maxPages;
-        if (maxPages && maxPages > 1) {
-            results = await client.searchAll(searchParams, maxPages);
-            console.log(`\n[Main] Total results: ${results.length}`);
-        } else {
-            const data = await client.search(searchParams);
-            results = data.results;
-            console.log(`\n[Main] Total in DB: ${data.count}, returned: ${results.length}`);
+        if (wantsCrawl) {
+            const maxPages = meta.all ? Infinity : (meta.maxPages || Infinity);
+            const outputFile = meta.outputFile || generateTimestampedFilename();
+            const outputPath = path.join(__dirname, outputFile);
+
+            // Resume: подхватываем уже сохранённые результаты из выходного файла.
+            let seedResults = [];
+            let startOffset = meta.startOffset || 0;
+            if (meta.resume && fs.existsSync(outputPath)) {
+                const prev = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+                seedResults = prev.results || [];
+                if (!meta.startOffset) startOffset = seedResults.length;
+                console.log(`[Main] Resume: загружено ${seedResults.length} предметов, продолжаем с offset ${startOffset}`);
+            }
+
+            const save = (results, count, completed) => {
+                const merged = seedResults.concat(results);
+                enrichOrigins(merged);
+                fs.writeFileSync(outputPath, JSON.stringify({
+                    count, completed, fetched: merged.length, results: merged
+                }, null, 2));
+            };
+
+            let sincePage = 0;
+            const result = await client.searchAll(searchParams, {
+                maxPages,
+                delayMs,
+                startOffset,
+                onProgress: async ({ results, totalCount, completed }) => {
+                    sincePage++;
+                    if (completed || sincePage % CHECKPOINT_EVERY === 0) {
+                        save(results, totalCount, completed);
+                        console.log(`[Main] Checkpoint: ${seedResults.length + results.length} предметов -> ${outputFile}`);
+                    }
+                }
+            });
+
+            // Финальное сохранение — гарантируем последнее состояние на диске.
+            save(result.results, result.count, result.completed);
+
+            const totalFetched = seedResults.length + result.results.length;
+            if (result.completed) {
+                console.log(`\n[Main] Готово. Выкачано ${totalFetched}/${result.count}. Сохранено в ${outputFile}`);
+            } else {
+                console.log(`\n[Main] Выкачка прервана на offset ${result.nextOffset} (неполная). Выкачано ${totalFetched}/${result.count}.`);
+                console.log(`[Main] Сохранено в ${outputFile}. Докачать: node index.js <те же фильтры> --resume -o ${outputFile}`);
+                process.exitCode = 1;
+            }
+            return;
         }
+
+        // --- Одностраничный поиск ---
+        const data = await client.search(searchParams);
+        const results = data.results || [];
+        console.log(`\n[Main] Total in DB: ${data.count}, returned: ${results.length}`);
 
         // Print summary
         if (results.length > 0) {
@@ -280,12 +351,7 @@ async function main() {
             }
         }
 
-        for (const item of results) {
-            if (item.props !== undefined) {
-                const originId = item.props & 0xFF;
-                item.origin = ORIGIN_NAMES[originId] || `Unknown (${originId})`;
-            }
-        }
+        enrichOrigins(results);
 
         const outputFile = meta.outputFile || generateTimestampedFilename();
         fs.writeFileSync(path.join(__dirname, outputFile), JSON.stringify({ count: results.length, results }, null, 2));

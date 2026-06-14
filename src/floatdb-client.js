@@ -18,8 +18,14 @@ const { BROWSER_UA, delay } = require('./utils');
 const FLOATDB_SEARCH_URL = 'https://csfloat.com/api/v1/floatdb/search';
 const REQUEST_TIMEOUT_MS = 30000;
 
-// Сколько раз пробуем восстановиться после 401/403 (re-solve → refresh session).
+// Сколько раз пробуем восстановиться после "обычного" 401/403 (re-solve → refresh session).
 const MAX_AUTH_RETRIES = 2;
+
+// Анти-бот стенка: 401 code 116 ("failed to verify recaptcha") и 429 (rate limit).
+// Это поведенческий троттлинг — лечится паузой, а не мгновенным пере-solve.
+// Ретраим БЕСКОНЕЧНО (пока стенка не спадёт), но длительность паузы ограничена потолком.
+const RECAPTCHA_THROTTLE_CODE = 116;
+const THROTTLE_BACKOFF_MAX_MS = 10 * 60 * 1000; // потолок паузы между попытками — 10 мин
 
 class FloatDBClient {
     /**
@@ -64,70 +70,89 @@ class FloatDBClient {
      * Пагинация через параметр start (offset).
      * Pipeline: следующий Turnstile token решается параллельно с текущим запросом.
      *
+     * Устойчивость:
+     *  - fid ротируется на каждую страницу, задержка с джиттером (анти-детект);
+     *  - 116/429 обрабатываются внутри _request паузой+ретраем (бесконечно, пока не спадёт);
+     *  - любая неустранимая ошибка НЕ роняет процесс: возвращаем уже собранное
+     *    + nextOffset для докачки (resume), вызвав onProgress с последним состоянием.
+     *
      * @param {Object} params - Те же что и search()
-     * @param {number} [maxPages=3] - Макс. количество страниц
-     * @param {number} [delayMs=1000] - Задержка между запросами (мс)
-     * @returns {Promise<Array>} Все результаты
+     * @param {Object} [options]
+     * @param {number} [options.maxPages=Infinity] - Макс. количество страниц
+     * @param {number} [options.delayMs=1500] - Базовая задержка между запросами (мс)
+     * @param {number} [options.startOffset=0] - Смещение старта (для resume)
+     * @param {Function} [options.onProgress] - async ({results, offset, totalCount, completed, error}) после каждой страницы
+     * @returns {Promise<{results: Array, count: number, completed: boolean, nextOffset: number, error?: Error}>}
      */
-    async searchAll(params = {}, maxPages = 3, delayMs = 1000) {
+    async searchAll(params = {}, { maxPages = Infinity, delayMs = 1500, startOffset = 0, onProgress = null } = {}) {
+        const limit = parseInt(params.limit ?? '100', 10);
+        await this._ensureSession();
+
         const allResults = [];
         let totalCount = 0;
-        const limit = parseInt(params.limit ?? '100', 10);
-
-        await this._ensureSession();
+        let offset = startOffset;
+        let completed = false;
 
         // Pre-solve first token
         console.log('[FloatDB] Solving initial Turnstile...');
         let nextToken = await this.solver.solve();
-        const fid = this._generateFid();
 
-        for (let page = 0; page < maxPages; page++) {
-            if (page > 0) {
-                await delay(delayMs);
-            }
+        try {
+            for (let page = 0; page < maxPages; page++) {
+                if (page > 0 || startOffset > 0) {
+                    await delay(this._jitter(delayMs));
+                }
 
-            const pageParams = { ...params };
-            if (page > 0) {
-                pageParams.start = String(page * limit);
-            }
+                const pageParams = { ...params };
+                if (offset > 0) pageParams.start = String(offset);
 
-            // Use the pre-solved token for this request
-            const currentToken = nextToken;
+                const currentToken = nextToken;
+                const fid = this._generateFid(); // ротация fid на каждую страницу
 
-            // Start solving next token IN PARALLEL with the API request (pipeline)
-            const needsMore = (page + 1) < maxPages;
-            let nextTokenPromise = null;
-            if (needsMore) {
-                nextTokenPromise = this.solver.solve().catch(err => {
-                    console.log(`[FloatDB] Pre-solve failed: ${err.message}, will solve on demand`);
-                    return null;
-                });
-            }
+                // Pre-solve следующий token параллельно с текущим запросом (pipeline)
+                const needsMore = (page + 1) < maxPages;
+                let nextTokenPromise = null;
+                if (needsMore) {
+                    nextTokenPromise = this.solver.solve().catch(err => {
+                        console.log(`[FloatDB] Pre-solve failed: ${err.message}, will solve on demand`);
+                        return null;
+                    });
+                }
 
-            // Make API request with current token
-            const { data } = await this._request(pageParams, currentToken, fid);
+                const { data } = await this._request(pageParams, currentToken, fid);
 
-            if (page === 0) totalCount = data.count;
+                if (totalCount === 0) totalCount = data.count;
 
-            if (!data.results || data.results.length === 0) break;
+                const batch = data.results || [];
+                if (batch.length === 0) { completed = true; break; }
 
-            allResults.push(...data.results);
-            console.log(`[FloatDB] Page ${page + 1}: +${data.results.length} items, ${allResults.length}/${totalCount} total`);
+                allResults.push(...batch);
+                offset += batch.length;
+                console.log(`[FloatDB] Page ${page + 1}: +${batch.length} items, ${allResults.length} fetched, offset=${offset}/${totalCount}`);
 
-            // Если вернулось меньше limit — больше нет результатов
-            if (data.results.length < limit) break;
+                if (onProgress) await onProgress({ results: allResults, offset, totalCount, completed: false });
 
-            // Get the pre-solved next token (or solve fresh if it failed)
-            if (needsMore) {
-                nextToken = await nextTokenPromise;
-                if (!nextToken) {
-                    console.log('[FloatDB] Solving Turnstile (on demand)...');
-                    nextToken = await this.solver.solve();
+                // Если вернулось меньше limit — больше нет результатов
+                if (batch.length < limit) { completed = true; break; }
+
+                // Берём pre-solved token (или решаем на месте, если pre-solve упал)
+                if (needsMore) {
+                    nextToken = await nextTokenPromise;
+                    if (!nextToken) {
+                        console.log('[FloatDB] Solving Turnstile (on demand)...');
+                        nextToken = await this.solver.solve();
+                    }
                 }
             }
+            if (!completed) completed = (offset >= totalCount); // упёрлись в maxPages
+        } catch (err) {
+            console.error(`[FloatDB] Crawl stopped at offset=${offset}: ${err.message}`);
+            if (onProgress) await onProgress({ results: allResults, offset, totalCount, completed: false, error: err.message });
+            return { results: allResults, count: totalCount, completed: false, nextOffset: offset, error: err };
         }
 
-        return allResults;
+        if (onProgress) await onProgress({ results: allResults, offset, totalCount, completed });
+        return { results: allResults, count: totalCount, completed, nextOffset: offset };
     }
 
     /**
@@ -170,7 +195,7 @@ class FloatDBClient {
      * @returns {Promise<{data: Object, token: string, fid: string}>}
      *   token/fid — фактически использованные при успешном запросе (для переиспользования).
      */
-    async _request(params, token, fid, attempt = 0) {
+    async _request(params, token, fid, retries = { auth: 0, throttle: 0 }) {
         const queryParams = this._buildQuery(params, token, fid);
         const url = `${FLOATDB_SEARCH_URL}?${queryParams.toString()}`;
         console.log(`[FloatDB] Searching: ${this._maskQuery(queryParams)}`);
@@ -184,28 +209,53 @@ class FloatDBClient {
             return { data: resp.data, token, fid };
         } catch (err) {
             const status = err.response?.status;
+            const code = err.response?.data?.code;
 
-            if ((status === 401 || status === 403) && attempt < MAX_AUTH_RETRIES) {
-                if (attempt === 0) {
+            // --- Поведенческий троттлинг: 429 ИЛИ 401 code 116 ("failed to verify recaptcha") ---
+            // Свежий токен тут не помогает мгновенно — нужно дать сессии "остыть".
+            // Ретраим бесконечно: ждём и пробуем снова, пока стенка не спадёт.
+            if (status === 429 || (status === 401 && code === RECAPTCHA_THROTTLE_CODE)) {
+                const waitMs = this._throttleBackoff(status, retries.throttle);
+                const tag = status === 429 ? '429 (rate limit)' : `401 code ${code} (recaptcha wall)`;
+                console.log(`[FloatDB] Throttled: ${tag}, waiting ${(waitMs / 1000).toFixed(0)}s (attempt ${retries.throttle + 1}, retrying until it clears)...`);
+                await delay(waitMs);
+                const freshToken = await this.solver.solve();
+                return this._request(params, freshToken, this._generateFid(), { ...retries, throttle: retries.throttle + 1 });
+            }
+
+            // --- Обычные 401/403: токен/сессия протухли ---
+            if ((status === 401 || status === 403) && retries.auth < MAX_AUTH_RETRIES) {
+                if (retries.auth === 0) {
                     console.log(`[FloatDB] Got ${status}, solving new Turnstile...`);
                 } else {
                     console.log(`[FloatDB] Got ${status} again, refreshing session...`);
                     await this.refreshSession();
                 }
                 const freshToken = await this.solver.solve();
-                return this._request(params, freshToken, this._generateFid(), attempt + 1);
-            }
-
-            if (status === 429) {
-                const waitMs = 5 * 60 * 1000 + Math.floor(Math.random() * 5 * 60 * 1000); // 5-10 мин
-                console.log(`[FloatDB] Got 429 (rate limit), waiting ${(waitMs / 60000).toFixed(1)} min...`);
-                await delay(waitMs);
-                const freshToken = await this.solver.solve();
-                return this._request(params, freshToken, this._generateFid(), attempt); // 429 не тратит попытки auth
+                return this._request(params, freshToken, this._generateFid(), { ...retries, auth: retries.auth + 1 });
             }
 
             throw err;
         }
+    }
+
+    /**
+     * Бэкофф для троттлинга.
+     *  - 429 (rate limit): 5-10 мин;
+     *  - 116 (recaptcha wall): эскалирующий 60с + n*30с за каждую попытку,
+     *    с потолком THROTTLE_BACKOFF_MAX_MS, + джиттер 0-60с.
+     */
+    _throttleBackoff(status, throttleCount) {
+        if (status === 429) {
+            return 5 * 60 * 1000 + Math.floor(Math.random() * 5 * 60 * 1000); // 5-10 мин
+        }
+        const base = Math.min(60 * 1000 + throttleCount * 30 * 1000, THROTTLE_BACKOFF_MAX_MS);
+        return base + Math.floor(Math.random() * 60 * 1000); // +0-60с джиттер
+    }
+
+    /** Случайный джиттер задержки: 0.75x..1.5x от базовой. */
+    _jitter(ms) {
+        return Math.floor(ms * (0.75 + Math.random() * 0.75));
     }
 
     /**
