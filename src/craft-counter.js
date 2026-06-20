@@ -18,6 +18,12 @@ const { delay } = require('./utils');
 
 const COUNT_LIMIT = 40000;
 
+// Предел дробления: ниже этой ширины окна делить бессмысленно — CSFloat хранит
+// float с точностью ~7 знаков, поэтому более узкое окно уже не сужает выборку.
+// Guard от бесконечной рекурсии в вырожденном случае (десятки тысяч предметов
+// с практически одинаковым float).
+const MIN_RANGE_WIDTH = 1e-7;
+
 const DEFAULT_SUB_RANGES = [
     [0, 0.07],
     [0.07, 0.15],
@@ -107,7 +113,10 @@ class CraftCounter {
 
     /**
      * Разбивает запрос на float sub-ranges и суммирует count.
-     * Рекурсивно бисектирует если sub-range тоже >= 40k.
+     * Рекурсивно бисектирует sub-range, который сам >= COUNT_LIMIT, деля его
+     * пополам до тех пор, пока в каждом окне не окажется < COUNT_LIMIT предметов —
+     * так гарантируется точный суммарный count при любом исходном объёме.
+     * Деление останавливается на MIN_RANGE_WIDTH (guard от бесконечной рекурсии).
      */
     async _getCountSplit(params, context, label, level, ranges) {
         let total = 0;
@@ -120,8 +129,8 @@ class CraftCounter {
             const result = await this.client.searchCount(rangeParams, ctx);
             ctx = result.context;
 
-            if (result.count >= COUNT_LIMIT) {
-                // Рекурсивная бисекция
+            if (result.count >= COUNT_LIMIT && (max - min) > MIN_RANGE_WIDTH) {
+                // Окно всё ещё переполнено и его ещё можно сузить — делим пополам.
                 const mid = (min + max) / 2;
                 console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] still >= ${COUNT_LIMIT}, bisecting at ${mid}`);
                 const left = await this._getCountSplit(params, ctx, label, level, [[min, mid]]);
@@ -131,7 +140,13 @@ class CraftCounter {
                 ctx = right.context;
                 total += left.total + right.total;
             } else {
-                console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] count=~${result.count}`);
+                if (result.count >= COUNT_LIMIT) {
+                    // Достигли предела точности float, а окно всё ещё переполнено —
+                    // дальше делить нечем. Берём как есть (крайне маловероятный случай).
+                    console.warn(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] упёрся в предел точности float при count>=${COUNT_LIMIT} — берём ~${result.count} как есть (возможна недооценка)`);
+                } else {
+                    console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] count=~${result.count}`);
+                }
                 total += result.count;
             }
         }
