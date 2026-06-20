@@ -101,7 +101,7 @@ class CraftCounter {
             return { total: result.count, context: result.context };
         }
 
-        console.log(`[CraftCounter] ${label} ${level}x: count=${result.count} >= ${COUNT_LIMIT}, splitting by float ranges...`);
+        console.log(`[CraftCounter] ${label} ${level}x: count=~${result.count} >= ${COUNT_LIMIT}, splitting by float ranges...`);
         return this._getCountSplit(params, result.context, label, level, DEFAULT_SUB_RANGES);
     }
 
@@ -131,7 +131,7 @@ class CraftCounter {
                 ctx = right.context;
                 total += left.total + right.total;
             } else {
-                console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] count=${result.count}`);
+                console.log(`[CraftCounter] ${label} ${level}x: sub-range [${min}, ${max}] count=~${result.count}`);
                 total += result.count;
             }
         }

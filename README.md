@@ -1,38 +1,115 @@
-# CSFloat FloatDB Parser
+<div align="center">
 
-Парсер базы данных CSFloat FloatDB. Поиск скинов CS2 по стикерам, float range, коллекциям, def/paint index. Поддерживает batch-обработку, подсчёт общего количества наклеенных стикеров и parse-режим.
+# 🎯 CSFloat FloatDB Parser
 
-## Требования
+**Парсер базы [CSFloat FloatDB](https://csfloat.com/db) — поиск скинов CS2 по стикерам, float, паттернам и коллекциям.**
 
-- **Node.js** >= 18.0.0
-- **Python** >= 3.10 (для Turnstile solver)
-- **Steam-аккаунт** с доступом к CSFloat
+![Node](https://img.shields.io/badge/Node.js-%3E%3D18-339933?logo=node.js&logoColor=white)
+![Python](https://img.shields.io/badge/Python-%3E%3D3.10-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.0.0--beta-orange)
 
-## Установка
+</div>
 
-### Автоматическая (Windows)
+---
 
-```bash
+## 📖 Содержание
+
+- [Возможности](#-возможности)
+- [Как это работает](#️-как-это-работает)
+- [Требования](#-требования)
+- [Быстрый старт](#-быстрый-старт)
+- [Настройка аккаунта](#-настройка-аккаунта)
+- [Использование](#-использование)
+  - [Поиск](#поиск)
+  - [Полная выкачка `--all`](#полная-выкачка---all)
+  - [Parse-режим (только count)](#parse-режим-только-count)
+  - [Batch из файла](#batch-из-файла)
+  - [Подсчёт наклеенных стикеров `--count`](#подсчёт-наклеенных-стикеров---count)
+- [Справочник CLI-флагов](#-справочник-cli-флагов)
+- [Фильтрация по категории](#-фильтрация-по-категории---category)
+- [Формат вывода](#-формат-вывода)
+- [Архитектура](#-архитектура)
+- [Лицензия](#-лицензия)
+
+---
+
+## ✨ Возможности
+
+- 🔎 **Поиск скинов** по стикерам, keychain'ам, коллекции, `def_index`/`paint_index`, диапазону float, редкости.
+- 🔗 **Парсинг URL** — вставь ссылку из CSFloat DB и забери результаты.
+- 📦 **Полная выкачка** всех уникальных предметов через курсорную пагинацию по float (`--all`), с чекпоинтами и докачкой.
+- 🧮 **Подсчёт наклеенных стикеров** по уровням 5x/4x/3x/2x/1x (`--count`) с авто-разбиением при больших выборках.
+- 📋 **Batch-режим** — пачка стикеров или URL из одного файла; имена стикеров резолвятся в ID автоматически.
+- 🛡️ **Устойчивость** — обработка троттлинга (`429`, recaptcha wall), ретраи, ротация fingerprint, джиттер задержек.
+
+---
+
+## ⚙️ Как это работает
+
+```
+Steam-аккаунт ──login+2FA──> CSFloat session (JWT)
+                                   │
+        Turnstile solver (Python) ─┤ token
+                                   ▼
+                       FloatDB API  /api/v1/floatdb/search
+                                   │
+                                   ▼
+                       results*.json (уникальные предметы)
+```
+
+Запросы к FloatDB требуют валидной Steam-сессии **и** свежего CloudFlare Turnstile токена. Токен выдаёт локальный solver (`http://127.0.0.1:5033`), сессию — авторизация через Steam OpenID.
+
+---
+
+## 📋 Требования
+
+| | |
+|---|---|
+| **Node.js** | `>= 18.0.0` |
+| **Python** | `>= 3.10` (для Turnstile solver) |
+| **Git** | для клонирования solver'а |
+| **Steam-аккаунт** | с доступом к CSFloat + включённой 2FA (нужен `shared_secret`) |
+
+---
+
+## 🚀 Быстрый старт
+
+### Windows (автоматически)
+
+```bat
 install.bat
 ```
 
-Скрипт выполнит:
-1. Проверку Node.js и Python
-2. `npm install`
-3. Клонирование и настройку [BotsForge CloudFlare Solver](https://github.com/BotsForge/CloudFlare-Solver) для решения Turnstile captcha
-4. Создание `account.json` из шаблона
+Скрипт проверит Node.js и Python, выполнит `npm install`, склонирует и пропатчит
+[BotsForge/CloudFlare](https://github.com/BotsForge/CloudFlare) solver и создаст `account.json` из шаблона.
 
-### Ручная
+### Вручную
 
 ```bash
 npm install
+# затем склонировать solver в ./solver и применить патч совместимости:
+git clone https://github.com/BotsForge/CloudFlare.git solver
+node solver-patch.js
 ```
 
-Затем клонировать CloudFlare Solver в папку `solver/` и установить его зависимости (см. `install.bat`).
+После установки:
 
-## Настройка
+```bash
+# 1. Заполни account.json (см. ниже)
+# 2. Запусти solver в ОТДЕЛЬНОМ окне:
+start-solver.bat            # или:  cd solver && python app.py
+# 3. Запускай парсер:
+node index.js --stickers 2711 --parse
+```
 
-Скопируйте `account.example.json` в `account.json` и заполните данные Steam-аккаунта:
+> Solver должен слушать `http://127.0.0.1:5033` — без него запросы не пройдут.
+
+---
+
+## 🔐 Настройка аккаунта
+
+Скопируй `account.example.json` → `account.json` и заполни:
 
 ```json
 {
@@ -43,188 +120,173 @@ npm install
 }
 ```
 
-`shared_secret` — секрет двухфакторной аутентификации Steam (base32). Можно получить через SDA или maFile.
+`shared_secret` — секрет 2FA Steam в base32 (берётся из SDA или `maFile`).
 
-## Перед запуском
+> ⚠️ `account.json` в `.gitignore` — не коммить свои креды.
 
-Запустите Turnstile solver в отдельном терминале:
+---
 
-```bash
-start-solver.bat
-```
+## 🛠 Использование
 
-Или вручную:
+### Поиск
 
 ```bash
-cd solver && python app.py
-```
-
-Solver должен быть доступен по адресу `http://127.0.0.1:5033`.
-
-## Использование
-
-### Базовый поиск
-
-```bash
-# Демо-поиск (2x B1ad3 Boston 2018)
+# Демо-поиск (2x B1ad3 | Boston 2018)
 node index.js
 
-# Поиск по URL CSFloat
+# По URL из CSFloat DB
 node index.js --url "https://csfloat.com/db?category=2&stickers=%5B%7B%22i%22:%222711%22%7D%5D"
 
-# Поиск по sticker IDs (через запятую)
+# По sticker ID (через запятую — несколько копий одного стикера)
 node index.js --stickers 2711,2711
 
-# Поиск по keychain IDs
+# По keychain ID
 node index.js --keychains 67,68
 
-# Поиск по коллекции
+# По коллекции
 node index.js --collection set_timed_drops_achroma
 
-# Поиск по float range
+# По диапазону float
 node index.js --min 0 --max 0.01
 
-# Поиск конкретного скина (def_index + paint_index)
+# Конкретный скин: def_index + paint_index
 node index.js --def 13 --paint 939
+```
 
-# Все уникальные результаты (курсорная выкачка по float, см. ниже)
+### Полная выкачка (`--all`)
+
+Забирает **все уникальные** предметы курсорной пагинацией по float (обычный offset на больших
+выборках упирается в ~10k и начинает отдавать дубли — подробности [ниже](#полная-выкачка-all-курсорная-пагинация-по-float)).
+
+```bash
+# Выкачать всё в out.json (чекпоинт каждые 10 страниц)
 node index.js --stickers 2711 --all -o out.json
 
 # Докачать прерванный прогон
 node index.js --stickers 2711 --all --resume -o out.json
 
-# Определённое количество страниц (offset-режим, для тестов)
+# N страниц offset-режимом (для тестов)
 node index.js --stickers 2711 --pages 5
 ```
 
-### Parse-режим
+### Parse-режим (только count)
 
-Возвращает только количество результатов без скачивания данных:
+Возвращает приблизительное количество (`~`) без скачивания данных:
 
 ```bash
-# Count скинов для одного запроса
 node index.js --stickers 2711 --parse
-
-# Count скинов по URL
 node index.js --url "https://csfloat.com/db?..." --parse
 ```
 
-### Batch-обработка из файла
+### Batch из файла
 
-#### Файл стикеров (JSON-объект или текстовый)
+Один файл — пачка стикеров **или** URL. Формат определяется автоматически.
 
-JSON-формат: `{"имя": sticker_id, ...}` — аналогично `checker.py`.
-
-```json
-{
-  "rmr2020_team_vita": 4701,
-  "kato2019_avangar": 5039,
-  "b1ad3_boston2018": 2711
-}
-```
-
-Текстовый формат — имена стикеров (market_hash_name), по одному на строку:
+**Стикеры по именам** (market_hash_name, по строке на каждый — см. [`examples/stickers-example.txt`](examples/stickers-example.txt)):
 
 ```
 Sticker | B1ad3 (Foil) | Krakow 2017
-Sticker | B1ad3 | Krakow 2017
 Sticker | electronic (Foil) | Krakow 2017
 ```
 
-ID стикеров автоматически резолвятся через CSFloat Schema API.
-
-```bash
-# Подсчёт общего кол-ва наклеенных стикеров (5x/4x/3x/2x/1x)
-node index.js --file stickers.txt --count
-
-# Информация о скинах для каждого стикера
-node index.js --file stickers.txt --parse
-
-# С кастомной задержкой и выходным файлом
-node index.js --file stickers.txt --count --delay 2000 -o report.json
-```
-
-#### Файл URL (JSON-массив или текст)
-
-JSON-массив:
+**Стикеры как JSON** (`{"имя": sticker_id}`):
 
 ```json
-[
-  "https://csfloat.com/db?category=2&stickers=%5B%7B%22i%22:%222711%22%7D%5D",
-  "https://csfloat.com/db?min=0&max=0.01&collection=set_timed_drops_achroma"
-]
+{ "b1ad3_boston2018": 2711, "kato2019_avangar": 5039 }
 ```
 
-Текстовый файл (по строкам, `#` — комментарии):
+**Список URL** (текст по строкам, `#` — комментарии, либо JSON-массив):
 
 ```
 https://csfloat.com/db?category=2&stickers=%5B%7B%22i%22:%222711%22%7D%5D
+# комментарий
 https://csfloat.com/db?min=0&max=0.01&collection=set_timed_drops_achroma
-# это комментарий
 ```
 
 ```bash
-# Count по списку URL
-node index.js --file urls.txt --parse
-
-# Полный поиск по каждому URL (с результатами)
-node index.js --file urls.txt
+node index.js --file examples/stickers-example.txt --parse        # count по каждому
+node index.js --file urls.txt                                     # полный поиск по каждому URL
+node index.js --file stickers.txt --parse --delay 2000 -o out.json
 ```
 
-## CLI-флаги
+> Имена стикеров резолвятся в ID через CSFloat Schema API автоматически.
+
+### Подсчёт наклеенных стикеров (`--count`)
+
+Считает, сколько всего копий стикера наклеено игроками, по уровням 5x/4x/3x/2x/1x:
+
+```bash
+node index.js --file stickers.txt --count
+node index.js --file stickers.txt --count --category 1,2   # исключить Souvenir
+```
+
+---
+
+## 📑 Справочник CLI-флагов
 
 | Флаг | Описание |
 |------|----------|
-| `--url <url>` | URL CSFloat для парсинга параметров поиска |
-| `--stickers <ids>` | Sticker IDs через запятую |
-| `--keychains <ids>` | Keychain IDs через запятую |
+| `--url <url>` | URL CSFloat — параметры поиска извлекаются из ссылки |
+| `--stickers <ids>` | Sticker ID через запятую (повтор = несколько копий) |
+| `--keychains <ids>` | Keychain ID через запятую |
 | `--collection <name>` | Имя коллекции |
-| `--min <float>` | Минимальный float (по умолчанию 0) |
-| `--max <float>` | Максимальный float (по умолчанию 1) |
-| `--def <index>` | def_index скина |
-| `--paint <index>` | paint_index скина |
-| `--limit <n>` | Лимит результатов на страницу (по умолчанию 100) |
-| `--category <ids>` | Категория предмета (см. ниже). Применяется ко всем запросам, включая batch и count |
+| `--min <float>` | Минимальный float (по умолчанию `0`) |
+| `--max <float>` | Максимальный float (по умолчанию `1`) |
+| `--def <index>` | `def_index` скина |
+| `--paint <index>` | `paint_index` скина |
+| `--limit <n>` | Результатов на страницу (по умолчанию `100`) |
+| `--category <ids>` | Категория предмета (см. [ниже](#-фильтрация-по-категории---category)) |
 | `--rarity <id>` | Редкость предмета |
 | `--order <type>` | Сортировка |
-| `--pages <n>` | Количество страниц (offset-режим, для частичных/тестовых прогонов) |
-| `--all` | Выкачать **все уникальные** результаты курсорной пагинацией по float (см. ниже) |
-| `--resume` | Докачать прерванный прогон из выходного файла (`-o`) |
-| `--start <offset>` | Начать offset-пагинацию с указанного смещения |
-| `--parse` | Только подсчёт скинов (без скачивания результатов) |
-| `--file <path>` | Входной файл (JSON стикеров, текст имён стикеров, JSON-массив URL или текст URL) |
-| `--count` | Подсчёт общего кол-ва наклеенных стикеров (5x/4x/3x/2x/1x) |
-| `--delay <ms>` | Базовая задержка между запросами в мс (по умолчанию 1500, +джиттер) |
-| `--output <path>`, `-o` | Путь к выходному файлу (по умолчанию `results_<дата>_<время>.json`) |
+| `--pages <n>` | N страниц offset-режимом (тесты/частичные прогоны) |
+| `--all` | Выкачать **все уникальные** курсорной пагинацией по float |
+| `--resume` | Докачать прерванный прогон из файла `-o` |
+| `--start <offset>` | Старт offset-пагинации с заданного смещения |
+| `--parse` | Только count (без скачивания результатов) |
+| `--file <path>` | Входной файл (стикеры/URL, JSON или текст) |
+| `--count` | Подсчёт наклеенных стикеров по уровням 5x..1x |
+| `--delay <ms>` | Базовая задержка между запросами (по умолчанию `1500` + джиттер) |
+| `--output <path>`, `-o` | Выходной файл (по умолчанию `results_<дата>_<время>.json`) |
 
-### Фильтрация по категории (`--category`)
+---
 
-Параметр `--category` фильтрует предметы по типу. Значения:
+## 🏷 Фильтрация по категории (`--category`)
 
 | Значение | Категория |
 |----------|-----------|
-| `0` | Все (по умолчанию, если не указан) |
-| `1` | Normal (обычные) |
+| `0` | Все (по умолчанию) |
+| `1` | Normal |
 | `2` | StatTrak |
 | `3` | Souvenir |
 
-Можно комбинировать через запятую: `--category 1,2` выведет Normal + StatTrak.
+Комбинируются через запятую: `--category 1,2` → Normal + StatTrak.
 
-**Зачем нужно:** некоторые Gold-стикеры (например турнирные) выпадают уже наклеенными на сувенирных предметах из сувенирных наборов. Такие наклейки не были применены игроком вручную. Чтобы посчитать только стикеры, наклеенные людьми (из капсул), нужно исключить Souvenir-предметы — для этого используйте `--category 1,2`.
+**Зачем:** некоторые Gold-стикеры (турнирные) выпадают уже наклеенными на сувенирных предметах —
+это не ручная наклейка игроком. Чтобы посчитать только наклеенные людьми, исключи Souvenir: `--category 1,2`.
 
-Если Gold-стикер не выпадает на сувенирных предметах (только из капсул), параметр `--category` указывать не нужно.
+---
 
-```bash
-# Подсчёт для Gold-стикера, который выпадает на сувенирах — исключаем Souvenir
-node index.js --file stickers.txt --count --category 1,2
+## 📤 Формат вывода
 
-# Обычный стикер без сувенирных версий — без фильтра
-node index.js --file stickers.txt --count
+> 💡 Поле `count` — **приблизительное** (CSFloat и сам рисует `~` в UI). В консоли оно тоже выводится со знаком `~`. В выкачке `--all` поле `fetched` — точное число реально собранных уникальных предметов.
+
+<details>
+<summary><b>Полная выкачка (<code>--all</code>)</b></summary>
+
+```json
+{
+  "count": 49000,
+  "completed": true,
+  "fetched": 46854,
+  "results": [ { "float_value": 0.0000743, "float_id": 51349434905, "paint_seed": 293, "...": "..." } ]
+}
 ```
+- `count` — приблизительная оценка из БД; `fetched` — точное число уникальных в `results`.
+- Дедуп идёт по `float_id` (уникальный ID предмета), поэтому скины с одинаковым float **не теряются**.
+</details>
 
-## Формат вывода
-
-### Count (`--count`)
+<details>
+<summary><b>Подсчёт стикеров (<code>--count</code>)</b></summary>
 
 ```json
 {
@@ -234,18 +296,19 @@ node index.js --file stickers.txt --count
     "rmr2020_team_vita": {
       "stickerId": 4701,
       "atLeast": { "5": 12, "4": 89, "3": 450, "2": 2100, "1": 8500 },
-      "net": { "5": 12, "4": 77, "3": 361, "2": 1650, "1": 6400 },
+      "net":     { "5": 12, "4": 77, "3": 361, "2": 1650, "1": 6400 },
       "totalApplied": 12890
     }
   }
 }
 ```
+- `atLeast[N]` — скинов с **как минимум** N копиями стикера.
+- `net[N]` — скинов с **ровно** N копиями (`atLeast[N] − atLeast[N+1]`).
+- `totalApplied` — всего наклеено (`5·net[5] + 4·net[4] + …`).
+</details>
 
-- `atLeast[N]` — количество скинов с *как минимум* N копиями стикера
-- `net[N]` — количество скинов с *ровно* N копиями (`atLeast[N] - atLeast[N+1]`)
-- `totalApplied` — общее число наклеенных стикеров (`5*net[5] + 4*net[4] + ...`)
-
-### Batch parse (`--parse`)
+<details>
+<summary><b>Batch parse (<code>--parse</code>)</b></summary>
 
 ```json
 {
@@ -257,75 +320,67 @@ node index.js --file stickers.txt --count
   }
 }
 ```
+</details>
 
-### Обычный поиск
+---
 
-```json
-{
-  "count": 42,
-  "results": [
-    {
-      "float_value": 0.0001234567,
-      "paint_seed": 661,
-      "s": "76561198012345678",
-      "stickers": [{ "i": 2711, "name": "B1ad3 | Boston 2018" }],
-      "origin": "Found in Crate"
-    }
-  ]
-}
-```
-
-## Архитектура
+## 🧩 Архитектура
 
 ```
-index.js                    — Точка входа, CLI-парсинг, маршрутизация
-solver-patch.js             — Патч BotsForge solver для совместимости с CSFloat
+index.js                  — Точка входа: CLI-парсинг, маршрутизация режимов
+solver-patch.js           — Патч BotsForge solver под CSFloat (идемпотентный)
+install.bat               — Установщик (Windows)
+start-solver.bat          — Запуск Turnstile solver
+examples/                 — Примеры входных файлов
 src/
-  csfloat-session.js        — Авторизация через Steam OpenID → CSFloat JWT
-  turnstile-solver.js       — Решение CloudFlare Turnstile через локальный solver
-  floatdb-client.js         — HTTP-клиент FloatDB API (search, searchAll, searchAllByFloat, searchCount)
-  utils.js                  — Общие утилиты (delay, User-Agent)
-  file-reader.js            — Чтение входных файлов, авто-определение формата
-  schema-resolver.js        — Резолв имён стикеров в ID через CSFloat Schema API
-  craft-counter.js          — Подсчёт craft-уровней с splitting при >40k
-  batch-processor.js        — Оркестрация batch-обработки
+  csfloat-session.js      — Авторизация Steam OpenID → CSFloat JWT
+  turnstile-solver.js     — Получение Turnstile токена от локального solver'а
+  floatdb-client.js       — HTTP-клиент FloatDB (search / searchAll / searchAllByFloat / searchCount)
+  craft-counter.js        — Подсчёт craft-уровней со splitting при count ≥ 40k
+  batch-processor.js      — Оркестрация batch-обработки
+  file-reader.js          — Чтение входных файлов, авто-определение формата
+  schema-resolver.js      — Резолв имён стикеров в ID через Schema API
+  utils.js                — Общие утилиты (delay, User-Agent)
 ```
 
 ### Процесс авторизации
 
-1. Логин в Steam через `steamcommunity` + 2FA (TOTP)
-2. Получение OpenID параметров со страницы авторизации CSFloat
-3. Подтверждение OpenID через Steam
-4. Получение session JWT от CSFloat
+1. Логин в Steam через `steamcommunity` + 2FA (TOTP из `shared_secret`).
+2. Получение OpenID-параметров со страницы авторизации CSFloat.
+3. Подтверждение OpenID через Steam.
+4. Получение session JWT от CSFloat.
 
-### Splitting при count >= 40000
+### Splitting при count ≥ 40 000
 
-API CSFloat возвращает максимум `count=40000`. Если результат достигает этого лимита, `CraftCounter` автоматически:
+API CSFloat отдаёт максимум `count = 40000`. При достижении лимита `CraftCounter`:
 
-1. Разбивает запрос на float sub-ranges: `[0, 0.07]`, `[0.07, 0.15]`, `[0.15, 0.38]`, `[0.38, 0.45]`, `[0.45, 1.0]`
-2. Суммирует count по каждому диапазону
-3. Если sub-range тоже >= 40000 — рекурсивно бисектирует пополам
+1. Разбивает запрос на float sub-ranges: `[0, 0.07]`, `[0.07, 0.15]`, `[0.15, 0.38]`, `[0.38, 0.45]`, `[0.45, 1.0]`.
+2. Суммирует count по каждому диапазону.
+3. Если sub-range тоже ≥ 40 000 — рекурсивно бисектирует пополам.
 
-## Полная выкачка (`--all`): курсорная пагинация по float
+### Полная выкачка `--all`: курсорная пагинация по float
 
-Обычная offset-пагинация (`start=0,100,200,...`) на больших выборках FloatDB **не работает**: API достаёт только первые ~10k результатов окна, дальше отдаёт те же предметы по кругу (дубли) и возвращает `400` на глубоком offset. Поэтому одним проходом `min=0/max=1` нельзя забрать всю выборку — выгребается только нижний диапазон float.
+Обычная offset-пагинация (`start=0,100,200,…`) на больших выборках FloatDB **не работает**: API
+достаёт только первые ~10k результатов окна, дальше отдаёт те же предметы по кругу и возвращает `400`
+на глубоком offset. Поэтому `--all` использует **курсорную (keyset) пагинацию по `float_value`**:
 
-`--all` использует **курсорную (keyset) пагинацию по `float_value`** (выдача отсортирована по float):
-
-1. Внутри окна `[min, max]` идём обычным offset'ом, пока приходят новые уникальные предметы.
-2. Как только страница не приносит новых (offset зациклился) **или** окно кончилось — берём **максимальный float среди всего собранного** (`globalMaxFloat`) и ставим его новым `min`, offset сбрасываем в 0. Окно ползёт вверх по float.
-3. Дедуп на лету по `float_id` (`min` включающий — граничные предметы перечитываются, но дубли отсеиваются без риска пропуска).
+1. Внутри окна `[min, max]` идём offset'ом, пока приходят новые уникальные предметы.
+2. Страница без новых (offset зациклился) **или** конец окна → берём максимальный float среди собранного
+   (`globalMaxFloat`) как новый `min`, offset → 0. Окно ползёт вверх по float.
+3. Дедуп на лету по `float_id` (`min` включающий — граница перечитывается, дубли отсеиваются без пропусков).
 4. Стоп, когда `globalMaxFloat` перестаёт расти (дошли до `max`).
 
-Дополнительно при выкачке:
+Дополнительно:
 
-- **Чекпоинты** — частичный результат пишется в выходной файл каждые 10 страниц и при любой ошибке, так что прогресс не теряется.
-- **Докачка** — `--all --resume -o out.json` подхватывает уже собранное, восстанавливает фронтир (`globalMaxFloat`) и продолжает.
-- **Троттлинг** — при `401 code 116` («recaptcha wall») и `429` процесс не падает, а ждёт с эскалирующим бэкоффом (потолок 10 мин) и ретраит, пока стенка не спадёт.
+- **Чекпоинты** — частичный результат пишется каждые 10 страниц и при любой ошибке.
+- **Докачка** — `--all --resume -o out.json` подхватывает собранное и восстанавливает фронтир.
+- **Троттлинг** — при `401 code 116` (recaptcha wall) и `429` процесс не падает, а ждёт с эскалирующим
+  бэкоффом (потолок 10 мин) и ретраит, пока стенка не спадёт.
 - **Анти-детект** — ротация `fid` на каждую страницу + джиттер задержки.
 
-Формат выходного файла: `{ count, completed, fetched, results }`, где `results` — уникальные предметы.
+---
 
-## Лицензия
+## 📄 Лицензия
 
-Private use only.
+Private use only. Для образовательных целей и личного использования.
+</content>

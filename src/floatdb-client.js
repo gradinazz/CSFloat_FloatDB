@@ -128,7 +128,7 @@ class FloatDBClient {
 
                 allResults.push(...batch);
                 offset += batch.length;
-                console.log(`[FloatDB] Page ${page + 1}: +${batch.length} items, ${allResults.length} fetched, offset=${offset}/${totalCount}`);
+                console.log(`[FloatDB] Page ${page + 1}: +${batch.length} items, ${allResults.length} fetched, offset=${offset}/~${totalCount}`);
 
                 if (onProgress) await onProgress({ results: allResults, offset, totalCount, completed: false });
 
@@ -224,7 +224,7 @@ class FloatDBClient {
                     }
                 }
 
-                console.log(`[FloatDB] Cursor page ${page}: min=${min.toFixed(6)} offset=${offset} +${newUnique} new (${results.length} unique / ${totalCount})`);
+                console.log(`[FloatDB] Cursor page ${page}: min=${min.toFixed(6)} offset=${offset} +${newUnique} new (${results.length} unique / ~${totalCount})`);
                 if (onProgress) await onProgress({ results, unique: results.length, totalCount, completed: false });
 
                 const endOfWindow = batch.length < limit; // последняя (неполная) страница окна
@@ -302,7 +302,7 @@ class FloatDBClient {
                 headers: this._headers(),
                 timeout: REQUEST_TIMEOUT_MS
             });
-            console.log(`[FloatDB] Found ${resp.data.count} results (returned ${resp.data.results?.length ?? 0})`);
+            console.log(`[FloatDB] Found ~${resp.data.count} results (returned ${resp.data.results?.length ?? 0})`);
             return { data: resp.data, token, fid };
         } catch (err) {
             const status = err.response?.status;

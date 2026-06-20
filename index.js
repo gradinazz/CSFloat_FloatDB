@@ -223,10 +223,10 @@ async function main() {
             for (const [name, data] of Object.entries(output.results)) {
                 if (data.totalApplied !== undefined) {
                     // --count mode
-                    console.log(`${name}: ${data.totalApplied}`);
+                    console.log(`${name}: ~${data.totalApplied}`);
                 } else if (data.count !== undefined) {
                     // --parse mode
-                    console.log(`${name}: ${data.count}`);
+                    console.log(`${name}: ~${data.count}`);
                 }
             }
         }
@@ -253,7 +253,7 @@ async function main() {
 
         try {
             const data = await client.searchCount(searchParams);
-            console.log(`\n[Main] Count: ${data.count}`);
+            console.log(`\n[Main] Count: ~${data.count} (приблизительно)`);
         } catch (err) {
             console.error(`[Main] Error: ${err.message}`);
             process.exit(1);
@@ -317,7 +317,7 @@ async function main() {
                 save(result.results, result.count, result.completed);
 
                 if (result.completed) {
-                    console.log(`\n[Main] Готово. Уникальных предметов: ${result.results.length} (count в БД: ${result.count}). Сохранено в ${outputFile}`);
+                    console.log(`\n[Main] Готово. Уникальных предметов: ${result.results.length} (count в БД: ~${result.count}, приблизительный). Сохранено в ${outputFile}`);
                 } else {
                     console.log(`\n[Main] Выкачка прервана (min=${result.nextMin}). Собрано ${result.results.length} уникальных.`);
                     console.log(`[Main] Сохранено в ${outputFile}. Докачать: node index.js <те же фильтры> --all --resume -o ${outputFile}`);
@@ -358,9 +358,9 @@ async function main() {
 
             const totalFetched = seedResults.length + result.results.length;
             if (result.completed) {
-                console.log(`\n[Main] Готово. Выкачано ${totalFetched}/${result.count}. Сохранено в ${outputFile}`);
+                console.log(`\n[Main] Готово. Выкачано ${totalFetched}/~${result.count}. Сохранено в ${outputFile}`);
             } else {
-                console.log(`\n[Main] Выкачка прервана на offset ${result.nextOffset} (неполная). Выкачано ${totalFetched}/${result.count}.`);
+                console.log(`\n[Main] Выкачка прервана на offset ${result.nextOffset} (неполная). Выкачано ${totalFetched}/~${result.count}.`);
                 console.log(`[Main] Сохранено в ${outputFile}. Докачать: node index.js <те же фильтры> --resume -o ${outputFile}`);
                 process.exitCode = 1;
             }
@@ -370,7 +370,7 @@ async function main() {
         // --- Одностраничный поиск ---
         const data = await client.search(searchParams);
         const results = data.results || [];
-        console.log(`\n[Main] Total in DB: ${data.count}, returned: ${results.length}`);
+        console.log(`\n[Main] Total in DB: ~${data.count} (приблизительно), returned: ${results.length}`);
 
         // Print summary
         if (results.length > 0) {
