@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="Logo.png" alt="CSFloat FloatDB Parser" width="420">
+
 # 🎯 CSFloat FloatDB Parser
 
 **Парсер базы [CSFloat FloatDB](https://csfloat.com/db) — поиск скинов CS2 по стикерам, float, паттернам и коллекциям.**
