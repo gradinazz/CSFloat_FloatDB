@@ -13,7 +13,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
-const { BROWSER_UA, delay } = require('./utils');
+const { BROWSER_UA, delay, formatDuration } = require('./utils');
 
 const FLOATDB_SEARCH_URL = 'https://csfloat.com/api/v1/floatdb/search';
 const REQUEST_TIMEOUT_MS = 30000;
@@ -201,6 +201,12 @@ class FloatDBClient {
         let completed = false;
         let page = 0;
 
+        // Для ETA: сколько уже было на старте прогона (seed) и когда прогон начался.
+        // Скорость считаем по предметам, собранным ЗА ЭТОТ прогон, делённым на
+        // прошедшее настенное время — поэтому паузы на 429 автоматически входят в среднюю.
+        const seedCount = results.length;
+        const startTime = Date.now();
+
         try {
             for (;;) {
                 if (page > 0) await delay(this._jitter(delayMs));
@@ -224,7 +230,20 @@ class FloatDBClient {
                     }
                 }
 
-                console.log(`[FloatDB] Cursor page ${page}: min=${min.toFixed(6)} offset=${offset} +${newUnique} new (${results.length} unique / ~${totalCount})`);
+                // ETA: totalCount — приблизительный размер текущего float-окна (что осталось
+                // выкачать за этот прогон). fetchedThisRun растёт к нему; remaining = окно - собрано.
+                const fetchedThisRun = results.length - seedCount;
+                const elapsed = Date.now() - startTime;
+                let etaStr = '—';
+                let rateStr = '—';
+                if (fetchedThisRun > 0 && elapsed > 0) {
+                    const ratePerSec = fetchedThisRun / (elapsed / 1000);
+                    rateStr = `${ratePerSec.toFixed(1)}/с`;
+                    const remaining = Math.max(0, totalCount - fetchedThisRun);
+                    etaStr = formatDuration((remaining / fetchedThisRun) * elapsed);
+                }
+
+                console.log(`[FloatDB] Cursor page ${page}: min=${min.toFixed(6)} offset=${offset} +${newUnique} new (${results.length} unique / ~${totalCount}) | ${rateStr} avg, ETA ${etaStr}`);
                 if (onProgress) await onProgress({ results, unique: results.length, totalCount, completed: false });
 
                 const endOfWindow = batch.length < limit; // последняя (неполная) страница окна

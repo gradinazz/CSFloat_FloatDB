@@ -17,4 +17,20 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-module.exports = { BROWSER_UA, delay };
+/**
+ * Форматирует длительность в человекочитаемый вид (Чч Мм Сс).
+ * @param {number} ms - миллисекунды
+ * @returns {string}
+ */
+function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return '—';
+    const totalSec = Math.round(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}ч ${m}м ${s}с`;
+    if (m > 0) return `${m}м ${s}с`;
+    return `${s}с`;
+}
+
+module.exports = { BROWSER_UA, delay, formatDuration };
