@@ -24,6 +24,8 @@
  *                                                        (курсорная пагинация по float, дедуп по float_id)
  *   node index.js --url "..." --pages 20              — первые 20 страниц (offset-режим, для тестов)
  *   node index.js --url "..." --all --resume -o out.json — докачать прерванный out.json
+ *                                                        (при resume перепроверяет последние ~500 предметов;
+ *                                                         глубину задаёт --backstep N, 0 — без перепроверки)
  *   node index.js --url "..." --start 4100 -o out.json   — offset-режим с offset 4100
  */
 
@@ -152,6 +154,9 @@ function parseArgs() {
                 break;
             case '--resume':
                 meta.resume = true;
+                break;
+            case '--backstep':
+                meta.backstepItems = parseInt(nextVal(), 10);
                 break;
         }
     }
@@ -305,6 +310,7 @@ async function main() {
                 const result = await client.searchAllByFloat(searchParams, {
                     delayMs,
                     seedItems: seedResults,
+                    ...(meta.backstepItems !== undefined ? { backstepItems: meta.backstepItems } : {}),
                     onProgress: async ({ results, totalCount, completed }) => {
                         sincePage++;
                         if (completed || sincePage % CHECKPOINT_EVERY === 0) {
