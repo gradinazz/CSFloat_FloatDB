@@ -22,3 +22,6 @@ archive/
 # OS
 Thumbs.db
 .DS_Store
+
+# Случайный пустой файл (артефакт оболочки)
+/node
